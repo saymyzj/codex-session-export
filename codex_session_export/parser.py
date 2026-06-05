@@ -51,7 +51,7 @@ def parse_session(path: Path, redactor: Redactor, max_output_lines: int = 80) ->
                 role = payload.get("role", "assistant")
                 text, assets = _extract_content(payload.get("content"))
                 key = (timestamp, role, text[:240])
-                if text and key not in seen_messages:
+                if (text or assets) and key not in seen_messages:
                     seen_messages.add(key)
                     is_internal = _looks_internal_context(text)
                     kind = "system_context" if is_internal else ("prompt" if role == "user" else "answer")
@@ -119,8 +119,9 @@ def parse_session(path: Path, redactor: Redactor, max_output_lines: int = 80) ->
             if msg_type in {"user_message", "agent_message"}:
                 role = "user" if msg_type == "user_message" else "assistant"
                 text = payload.get("message", "")
+                assets = _assets_from_payload(payload)
                 key = (timestamp, role, text[:240])
-                if text and key not in seen_messages:
+                if (text or assets) and key not in seen_messages:
                     seen_messages.add(key)
                     is_internal = _looks_internal_context(text)
                     add_event(
@@ -132,7 +133,7 @@ def parse_session(path: Path, redactor: Redactor, max_output_lines: int = 80) ->
                             title="上下文/系统信息" if is_internal else ("用户 Prompt" if role == "user" else "AI 回复"),
                             text=text,
                             raw=payload,
-                            assets=_assets_from_payload(payload),
+                            assets=assets,
                             importance=1 if is_internal else (5 if role == "user" else 3),
                             collapsed=True if is_internal else (False if role == "user" else len(text) > 1200),
                         )

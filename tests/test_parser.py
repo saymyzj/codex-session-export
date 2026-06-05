@@ -10,6 +10,7 @@ from codex_session_export.cli import _resolve_sessions
 from codex_session_export.gui import _session_payload, _validate_output_dir
 from codex_session_export.parser import parse_session
 from codex_session_export.redact import Redactor
+from codex_session_export.render import write_report
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -119,6 +120,31 @@ class GuiTests(unittest.TestCase):
         bad_path = Path.home() / ".codex" / "exports"
         with self.assertRaises(ValueError):
             _validate_output_dir(bad_path)
+
+
+class RenderAssetTests(unittest.TestCase):
+    def test_data_uri_image_is_written_to_assets(self) -> None:
+        pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            session = tmp_path / "rollout-image.jsonl"
+            out_dir = tmp_path / "out"
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:00Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_image", "image_url": pixel, "alt": "pixel"}]}},
+                ],
+            )
+
+            redactor = Redactor(mode="basic")
+            report = parse_session(session, redactor)
+            write_report(report, out_dir, redactor=redactor)
+
+            asset = out_dir / "assets" / "asset-001.png"
+            html = (out_dir / "report.html").read_text(encoding="utf-8")
+            self.assertTrue(asset.exists())
+            self.assertIn('src="assets/asset-001.png"', html)
+            self.assertNotIn("data:image/png;base64", html)
 
 
 if __name__ == "__main__":

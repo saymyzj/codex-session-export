@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import html
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -262,6 +265,13 @@ def _copy_assets(events: list[Event], assets_dir: Path, redactor: Redactor) -> N
     counter = 1
     for event in events:
         for asset in event.assets:
+            if asset.source.startswith("data:"):
+                exported = _copy_data_uri(asset.source, assets_dir, counter)
+                asset.source = "[DATA_URI_IMAGE]"
+                if exported:
+                    asset.exported_name = exported
+                    counter += 1
+                continue
             source = redactor.redact(asset.source)
             path = Path(asset.source).expanduser()
             if not path.exists() or not path.is_file():
@@ -272,6 +282,30 @@ def _copy_assets(events: list[Event], assets_dir: Path, redactor: Redactor) -> N
             asset.exported_name = name
             asset.source = source
             counter += 1
+
+
+def _copy_data_uri(source: str, assets_dir: Path, counter: int) -> str | None:
+    match = re.match(r"^data:(?P<mime>image/[A-Za-z0-9.+-]+);base64,(?P<data>.*)$", source, flags=re.DOTALL)
+    if not match:
+        return None
+    mime = match.group("mime").lower()
+    suffix = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/svg+xml": ".svg",
+    }.get(mime, ".bin")
+    try:
+        data = base64.b64decode(match.group("data"), validate=False)
+    except (binascii.Error, ValueError):
+        return None
+    if not data:
+        return None
+    name = f"asset-{counter:03d}{suffix}"
+    (assets_dir / name).write_bytes(data)
+    return name
 
 
 def _write_redacted_jsonl(source: Path, target: Path, redactor: Redactor) -> None:
