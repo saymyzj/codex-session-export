@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .gui import run_gui
 from .parser import parse_session
 from .redact import Redactor
 from .render import write_batch_index, write_report
@@ -17,6 +18,13 @@ def main(argv: list[str] | None = None) -> int:
     list_parser = sub.add_parser("list", help="列出本地 Codex JSONL 会话。")
     list_parser.add_argument("--root", type=Path, default=SESSION_ROOT)
     list_parser.add_argument("--limit", type=int, default=20)
+
+    gui_parser = sub.add_parser("gui", help="启动本地 GUI 控制台，用于扫描、选择和导出会话。")
+    gui_parser.add_argument("--root", type=Path, default=SESSION_ROOT)
+    gui_parser.add_argument("--out", type=Path, default=Path.cwd() / "exports")
+    gui_parser.add_argument("--host", default="127.0.0.1")
+    gui_parser.add_argument("--port", type=int, default=8765)
+    gui_parser.add_argument("--no-browser", action="store_true", help="启动后不自动打开浏览器。")
 
     export_parser = sub.add_parser("export", help="导出一个或多个会话为 HTML/Markdown 报告。")
     export_parser.add_argument("session", type=Path, nargs="?", help="直接指定 rollout-*.jsonl 路径")
@@ -36,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "list":
         return _list(args.root, args.limit)
+    if args.command == "gui":
+        run_gui(host=args.host, port=args.port, open_browser=not args.no_browser, root=args.root, out=args.out)
+        return 0
     if args.command == "export":
         return _export(args)
     return 2

@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from codex_session_export.cli import _resolve_sessions
+from codex_session_export.gui import _session_payload, _validate_output_dir
 from codex_session_export.parser import parse_session
 from codex_session_export.redact import Redactor
 
@@ -94,6 +95,30 @@ class CliSelectionTests(unittest.TestCase):
 
             resolved = _resolve_sessions(args)
             self.assertEqual(resolved, [session])
+
+
+class GuiTests(unittest.TestCase):
+    def test_session_payload_includes_first_real_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "rollout-gui.jsonl"
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:00Z", "type": "session_meta", "payload": {"id": "gui-session-id", "cwd": "/demo", "originator": "Codex Desktop"}},
+                    {"timestamp": "2026-06-05T00:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<environment_context>hidden</environment_context>"}]}},
+                    {"timestamp": "2026-06-05T00:00:02Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "请帮我导出这个会话"}]}},
+                ],
+            )
+
+            payload = _session_payload(session)
+
+            self.assertEqual(payload["id"], "gui-session-id")
+            self.assertIn("请帮我导出", payload["first_prompt"])
+
+    def test_output_dir_rejects_codex_home(self) -> None:
+        bad_path = Path.home() / ".codex" / "exports"
+        with self.assertRaises(ValueError):
+            _validate_output_dir(bad_path)
 
 
 if __name__ == "__main__":
