@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+from codex_session_export.cli import _resolve_sessions
+from codex_session_export.parser import parse_session
+from codex_session_export.redact import Redactor
+
+
+def write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+
+
+class ParserTests(unittest.TestCase):
+    def test_parse_terminal_command_and_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            session = tmp_path / "rollout-test.jsonl"
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:00Z", "type": "session_meta", "payload": {"id": "abc", "cwd": "/Users/alice/demo", "originator": "Codex Desktop"}},
+                    {"timestamp": "2026-06-05T00:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "帮我运行测试"}]}},
+                    {"timestamp": "2026-06-05T00:00:02Z", "type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"pytest -q\",\"workdir\":\"/Users/alice/demo\"}", "call_id": "call_1"}},
+                    {"timestamp": "2026-06-05T00:00:03Z", "type": "response_item", "payload": {"type": "function_call_output", "call_id": "call_1", "output": "Process exited with code 0\nOutput:\n2 passed"}},
+                ],
+            )
+            report = parse_session(session, Redactor(mode="strict", workspace=tmp_path))
+
+            self.assertEqual(report.meta.session_id, "abc")
+            self.assertEqual(report.stats["user_prompts"], 1)
+            self.assertEqual(report.stats["terminal_commands"], 1)
+            self.assertEqual(report.stats["validation_runs"], 1)
+            command = next(event for event in report.events if event.kind == "terminal_command")
+            self.assertEqual(command.exit_code, 0)
+            self.assertIn("2 passed", command.details)
+            self.assertEqual(command.cwd, "[ABSOLUTE_PATH]")
+
+    def test_redacts_secret_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "rollout-secret.jsonl"
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "TOKEN=abc123456789 and a@b.com"}]}},
+                ],
+            )
+            report = parse_session(session, Redactor(mode="basic"))
+            self.assertIn("[SECRET_REDACTED]", report.events[0].text)
+            self.assertIn("[EMAIL_REDACTED]", report.events[0].text)
+
+    def test_internal_context_is_not_counted_as_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "rollout-context.jsonl"
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:00Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "# AGENTS.md instructions for /tmp/demo"}]}},
+                    {"timestamp": "2026-06-05T00:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "请导出这个会话"}]}},
+                ],
+            )
+            report = parse_session(session, Redactor(mode="none"))
+            self.assertEqual(report.stats["user_prompts"], 1)
+            self.assertEqual(report.events[0].kind, "system_context")
+            self.assertEqual(report.events[1].kind, "prompt")
+
+
+class CliSelectionTests(unittest.TestCase):
+    def test_resolve_sessions_by_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root / "2026" / "06" / "05" / "rollout-demo.jsonl"
+            session.parent.mkdir(parents=True, exist_ok=True)
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:00Z", "type": "session_meta", "payload": {"id": "019e9775-f415-77b3-a0be-21492cc2fc14", "cwd": "/demo", "originator": "Codex Desktop"}},
+                ],
+            )
+
+            args = SimpleNamespace(
+                session=None,
+                latest=False,
+                ids=["019e9775-f415"],
+                ids_file=None,
+                all=False,
+                limit=None,
+                root=root,
+            )
+
+            resolved = _resolve_sessions(args)
+            self.assertEqual(resolved, [session])
+
+
+if __name__ == "__main__":
+    unittest.main()
