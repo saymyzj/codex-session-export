@@ -99,6 +99,29 @@ class ParserTests(unittest.TestCase):
             answers = [event for event in report.events if event.kind == "answer"]
             self.assertEqual(len(answers), 2)
 
+    def test_custom_apply_patch_is_counted_as_file_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "rollout-custom-patch.jsonl"
+            patch = "*** Begin Patch\n*** Add File: demo.py\n+print('ok')\n*** End Patch\n"
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:00Z", "type": "response_item", "payload": {"type": "custom_tool_call", "name": "apply_patch", "input": patch, "call_id": "call_patch"}},
+                    {"timestamp": "2026-06-05T00:00:01Z", "type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "call_patch", "output": "Exit code: 0\nSuccess. Updated the following files:\nA demo.py\n"}},
+                ],
+            )
+
+            report = parse_session(session, Redactor(mode="none"))
+            html_text = render_html(report, course=None, assignment=None, review_note=None)
+            edit = next(event for event in report.events if event.kind == "file_edit")
+
+            self.assertEqual(report.stats["file_edits"], 1)
+            self.assertEqual(report.stats["tool_calls"], 1)
+            self.assertEqual(edit.exit_code, 0)
+            self.assertEqual(edit.files, ["demo.py"])
+            self.assertIn('data-filter="tool"', html_text)
+            self.assertIn('data-view="all default tool edit"', html_text)
+
 
 class CliSelectionTests(unittest.TestCase):
     def test_resolve_sessions_by_id(self) -> None:

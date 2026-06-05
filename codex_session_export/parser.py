@@ -76,14 +76,14 @@ def parse_session(path: Path, redactor: Redactor, max_output_lines: int = 80) ->
                     )
                 continue
 
-            if response_type == "function_call":
-                event = _event_from_function_call(len(events) + 1, timestamp, payload, redactor)
+            if response_type in {"function_call", "custom_tool_call"}:
+                event = _event_from_tool_call(len(events) + 1, timestamp, payload, redactor)
                 add_event(event)
                 if event.call_id:
                     pending_calls[event.call_id] = event
                 continue
 
-            if response_type == "function_call_output":
+            if response_type in {"function_call_output", "custom_tool_call_output"}:
                 call_id = payload.get("call_id")
                 output = str(payload.get("output", ""))
                 truncated, was_truncated = truncate_middle(output, max_lines=max_output_lines)
@@ -115,7 +115,7 @@ def parse_session(path: Path, redactor: Redactor, max_output_lines: int = 80) ->
                 )
                 continue
 
-            if response_type in {"reasoning", "web_search_call", "function_call"}:
+            if response_type in {"reasoning", "web_search_call"}:
                 continue
 
         if item_type == "event_msg":
@@ -143,6 +143,25 @@ def parse_session(path: Path, redactor: Redactor, max_output_lines: int = 80) ->
                             collapsed=True if is_internal else (False if role == "user" else len(text) > 1200),
                         )
                     )
+                continue
+
+            if msg_type == "patch_apply_end":
+                call_id = payload.get("call_id")
+                output = "\n".join(str(payload.get(key, "")) for key in ("stdout", "stderr") if payload.get(key))
+                truncated, was_truncated = truncate_middle(output, max_lines=max_output_lines)
+                if call_id in pending_calls:
+                    event = pending_calls[call_id]
+                    if truncated:
+                        event.details = redactor.redact(truncated)
+                    event.exit_code = 0 if payload.get("success") else _parse_exit_code(output)
+                    if was_truncated:
+                        event.tags.add("truncated")
+                    event.title = _title_with_result(event)
+                    continue
+                event = _event_from_patch_apply_end(len(events) + 1, timestamp, payload)
+                add_event(event)
+                if event.call_id:
+                    pending_calls[event.call_id] = event
                 continue
 
     stats = compute_stats(events)
@@ -192,9 +211,9 @@ def _apply_session_meta(meta: SessionMeta, payload: dict[str, Any]) -> None:
     meta.originator = payload.get("originator") or meta.originator
 
 
-def _event_from_function_call(index: int, timestamp: str | None, payload: dict[str, Any], redactor: Redactor) -> Event:
+def _event_from_tool_call(index: int, timestamp: str | None, payload: dict[str, Any], redactor: Redactor) -> Event:
     name = payload.get("name") or "tool"
-    args = parse_json_maybe(payload.get("arguments", {}))
+    args = _tool_args(payload)
     call_id = payload.get("call_id")
     details = json.dumps(args, ensure_ascii=False, indent=2) if not isinstance(args, str) else args
 
@@ -260,6 +279,37 @@ def _event_from_function_call(index: int, timestamp: str | None, payload: dict[s
         tool_name=name,
         importance=2,
         collapsed=True,
+    )
+
+
+def _tool_args(payload: dict[str, Any]) -> Any:
+    if "arguments" in payload:
+        return parse_json_maybe(payload.get("arguments", {}))
+    if "input" in payload:
+        return parse_json_maybe(payload.get("input", ""))
+    return {}
+
+
+def _event_from_patch_apply_end(index: int, timestamp: str | None, payload: dict[str, Any]) -> Event:
+    changes = payload.get("changes") or {}
+    files = [str(path) for path in changes.keys()]
+    output = "\n".join(str(payload.get(key, "")) for key in ("stdout", "stderr") if payload.get(key))
+    return Event(
+        index=index,
+        timestamp=timestamp,
+        role="tool",
+        kind="file_edit",
+        title="文件修改 · 成功" if payload.get("success") else "文件修改",
+        text=_summarize_files(files) if files else "应用补丁修改文件",
+        details=output,
+        raw=payload,
+        call_id=payload.get("call_id"),
+        tool_name="apply_patch",
+        files=files,
+        tags={"file_edit"},
+        importance=5,
+        collapsed=True,
+        exit_code=0 if payload.get("success") else _parse_exit_code(output),
     )
 
 
@@ -394,7 +444,8 @@ def _title_with_result(event: Event) -> str:
     if event.exit_code is None:
         return event.title
     status = "成功" if event.exit_code == 0 else f"失败，退出码 {event.exit_code}"
-    return f"{event.title} · {status}"
+    base_title = re.sub(r" · (?:成功|失败，退出码 -?\d+)$", "", event.title)
+    return f"{base_title} · {status}"
 
 
 def _summarize_files(files: list[str]) -> str:

@@ -142,6 +142,7 @@ def render_html(report: Report, *, course: str | None, assignment: str | None, r
       <button data-filter="default" class="active">默认视图</button>
       <button data-filter="all">完整视图</button>
       <button data-filter="prompt">提示词</button>
+      <button data-filter="tool">工具调用</button>
       <button data-filter="command">命令记录</button>
       <button data-filter="validation">验证记录</button>
       <button data-filter="edit">文件修改</button>
@@ -196,7 +197,7 @@ def render_markdown(report: Report, *, course: str | None, assignment: str | Non
 
 
 def _render_event_html(event: Event) -> str:
-    classes = " ".join(["event", event.role, event.kind] + sorted(event.tags))
+    classes = " ".join(dict.fromkeys(["event", event.role, event.kind] + sorted(event.tags)))
     data = _data_filters(event)
     time = html.escape(_short_time(event.timestamp))
     title = html.escape(event.title)
@@ -453,6 +454,8 @@ def _data_filters(event: Event) -> str:
         filters.append("default")
     if event.kind == "prompt":
         filters.append("prompt")
+    if event.role == "tool":
+        filters.append("tool")
     if event.kind == "terminal_command":
         filters.append("command")
     if "validation" in event.tags:
