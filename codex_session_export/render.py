@@ -334,9 +334,93 @@ def _manifest(report: Report, *, course: str | None, assignment: str | None) -> 
 def _format_text(text: str) -> str:
     if not text:
         return ""
+    blocks: list[str] = []
+    paragraph: list[str] = []
+    list_items: list[str] = []
+    list_tag = "ul"
+    code_lines: list[str] = []
+    in_code = False
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            blocks.append(f"<p>{'<br>'.join(_format_inline(line) for line in paragraph)}</p>")
+            paragraph.clear()
+
+    def flush_list() -> None:
+        nonlocal list_tag
+        if list_items:
+            blocks.append(f"<{list_tag}>" + "".join(f"<li>{item}</li>" for item in list_items) + f"</{list_tag}>")
+            list_items.clear()
+            list_tag = "ul"
+
+    def flush_code() -> None:
+        if code_lines:
+            blocks.append(f"<pre><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
+            code_lines.clear()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_code:
+                flush_code()
+                in_code = False
+            else:
+                flush_paragraph()
+                flush_list()
+                in_code = True
+            continue
+        if in_code:
+            code_lines.append(line)
+            continue
+        if not stripped:
+            flush_paragraph()
+            flush_list()
+            continue
+        heading = re.match(r"^(#{1,4})\s+(.+)$", stripped)
+        if heading:
+            flush_paragraph()
+            flush_list()
+            level = min(4, len(heading.group(1)) + 2)
+            blocks.append(f"<h{level}>{_format_inline(heading.group(2))}</h{level}>")
+            continue
+        bullet = re.match(r"^[-*]\s+(.+)$", stripped)
+        if bullet:
+            flush_paragraph()
+            if list_items and list_tag != "ul":
+                flush_list()
+            list_tag = "ul"
+            list_items.append(_format_inline(bullet.group(1)))
+            continue
+        numbered = re.match(r"^\d+[.)]\s+(.+)$", stripped)
+        if numbered:
+            flush_paragraph()
+            if list_items and list_tag != "ol":
+                flush_list()
+            list_tag = "ol"
+            list_items.append(_format_inline(numbered.group(1)))
+            continue
+        quote = re.match(r"^>\s?(.+)$", stripped)
+        if quote:
+            flush_paragraph()
+            flush_list()
+            blocks.append(f"<blockquote>{_format_inline(quote.group(1))}</blockquote>")
+            continue
+        flush_list()
+        paragraph.append(line)
+
+    if in_code:
+        flush_code()
+    flush_paragraph()
+    flush_list()
+    return "".join(blocks)
+
+
+def _format_inline(text: str) -> str:
     escaped = html.escape(text)
-    paragraphs = escaped.split("\n\n")
-    return "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs if p.strip())
+    escaped = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2" rel="noreferrer">\1</a>', escaped)
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    return escaped
 
 
 def _format_pre(text: str) -> str:
@@ -415,6 +499,14 @@ time { color:var(--muted); font-size:13px; font-weight:400; margin-left:auto; }
 .result.ok { background:#dff1e6; color:var(--ok); }
 .result.fail { background:#f6dedb; color:var(--fail); }
 p { margin:0 0 10px; }
+.text h3, .text h4 { margin:10px 0 6px; line-height:1.35; letter-spacing:0; }
+.text h3 { font-size:17px; }
+.text h4 { font-size:15px; color:var(--ink); }
+.text ul, .text ol { margin:6px 0 10px; padding-left:24px; }
+.text li { margin:3px 0; }
+.text blockquote { margin:8px 0 10px; padding:8px 12px; border-left:3px solid var(--line); color:var(--muted); background:#fafaf7; border-radius:6px; }
+.text a { color:var(--accent); font-weight:700; }
+.text p:last-child, .text ul:last-child, .text ol:last-child, .text blockquote:last-child { margin-bottom:0; }
 pre { overflow:auto; background:#202124; color:#f4f4f4; border-radius:8px; padding:12px; max-height:520px; }
 .cmd { background:#111; }
 details { margin-top:10px; }

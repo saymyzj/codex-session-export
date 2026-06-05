@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,8 @@ def parse_session(path: Path, redactor: Redactor, max_output_lines: int = 80) ->
     events: list[Event] = []
     pending_calls: dict[str, Event] = {}
     warnings: list[str] = []
-    seen_messages: set[tuple[str | None, str, str]] = set()
+    last_message_signature: tuple[str, str, tuple[str, ...]] | None = None
+    last_message_ts: str | None = None
 
     def add_event(event: Event) -> Event:
         event.text = redactor.redact(event.text)
@@ -50,9 +53,10 @@ def parse_session(path: Path, redactor: Redactor, max_output_lines: int = 80) ->
             if response_type == "message":
                 role = payload.get("role", "assistant")
                 text, assets = _extract_content(payload.get("content"))
-                key = (timestamp, role, text[:240])
-                if (text or assets) and key not in seen_messages:
-                    seen_messages.add(key)
+                signature = _message_signature(role, text, assets)
+                if (text or assets) and not _is_duplicate_message(signature, timestamp, last_message_signature, last_message_ts):
+                    last_message_signature = signature
+                    last_message_ts = timestamp
                     is_internal = _looks_internal_context(text)
                     kind = "system_context" if is_internal else ("prompt" if role == "user" else "answer")
                     title = "上下文/系统信息" if is_internal else ("用户 Prompt" if role == "user" else "AI 回复")
@@ -120,9 +124,10 @@ def parse_session(path: Path, redactor: Redactor, max_output_lines: int = 80) ->
                 role = "user" if msg_type == "user_message" else "assistant"
                 text = payload.get("message", "")
                 assets = _assets_from_payload(payload)
-                key = (timestamp, role, text[:240])
-                if (text or assets) and key not in seen_messages:
-                    seen_messages.add(key)
+                signature = _message_signature(role, text, assets)
+                if (text or assets) and not _is_duplicate_message(signature, timestamp, last_message_signature, last_message_ts):
+                    last_message_signature = signature
+                    last_message_ts = timestamp
                     is_internal = _looks_internal_context(text)
                     add_event(
                         Event(
@@ -343,6 +348,31 @@ def _friendly_tool_name(name: str) -> str:
         "update_plan": "计划更新",
     }
     return mapping.get(name, f"工具调用：{name}")
+
+
+def _message_signature(role: str, text: str, assets: list[AssetRef]) -> tuple[str, str, tuple[str, ...]]:
+    normalized_text = re.sub(r"\s+", " ", text).strip()
+    text_sig = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+    asset_sig = tuple(hashlib.sha256(asset.source.encode("utf-8")).hexdigest() for asset in assets[:4])
+    return role, text_sig, asset_sig
+
+
+def _is_duplicate_message(
+    current: tuple[str, str, tuple[str, ...]],
+    timestamp: str | None,
+    last: tuple[str, str, tuple[str, ...]] | None,
+    last_timestamp: str | None,
+) -> bool:
+    if last is None or current != last:
+        return False
+    if timestamp is None or last_timestamp is None:
+        return True
+    try:
+        current_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        last_dt = datetime.fromisoformat(last_timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return abs((current_dt - last_dt).total_seconds()) <= 5
 
 
 def _looks_internal_context(text: str) -> bool:

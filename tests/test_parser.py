@@ -10,7 +10,7 @@ from codex_session_export.cli import _resolve_sessions
 from codex_session_export.gui import _session_payload, _validate_output_dir
 from codex_session_export.parser import parse_session
 from codex_session_export.redact import Redactor
-from codex_session_export.render import write_report
+from codex_session_export.render import render_html, write_report
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -69,6 +69,35 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(report.stats["user_prompts"], 1)
             self.assertEqual(report.events[0].kind, "system_context")
             self.assertEqual(report.events[1].kind, "prompt")
+
+    def test_duplicate_assistant_message_is_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "rollout-dup.jsonl"
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:00Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "我先把实验要求读出来。"}]}},
+                    {"timestamp": "2026-06-05T00:00:01Z", "type": "event_msg", "payload": {"type": "agent_message", "message": "我先把实验要求读出来。"}},
+                ],
+            )
+            report = parse_session(session, Redactor(mode="none"))
+            answers = [event for event in report.events if event.kind == "answer"]
+            self.assertEqual(len(answers), 1)
+
+    def test_similar_long_messages_are_not_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "rollout-similar.jsonl"
+            prefix = "同一个长开头" * 80
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:00Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": prefix + "A"}]}},
+                    {"timestamp": "2026-06-05T00:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": prefix + "B"}]}},
+                ],
+            )
+            report = parse_session(session, Redactor(mode="none"))
+            answers = [event for event in report.events if event.kind == "answer"]
+            self.assertEqual(len(answers), 2)
 
 
 class CliSelectionTests(unittest.TestCase):
@@ -145,6 +174,22 @@ class RenderAssetTests(unittest.TestCase):
             self.assertTrue(asset.exists())
             self.assertIn('src="assets/asset-001.png"', html)
             self.assertNotIn("data:image/png;base64", html)
+
+    def test_markdown_heading_is_rendered_without_hash_marks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "rollout-md.jsonl"
+            write_jsonl(
+                session,
+                [
+                    {"timestamp": "2026-06-05T00:00:00Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "## My request for Codex:\n- 第一项\n- 第二项\n\n1. 第三项\n2. 第四项"}]}},
+                ],
+            )
+            report = parse_session(session, Redactor(mode="none"))
+            html_text = render_html(report, course=None, assignment=None, review_note=None)
+            self.assertIn("<h4>My request for Codex:</h4>", html_text)
+            self.assertIn("<li>第一项</li>", html_text)
+            self.assertIn("<ol><li>第三项</li><li>第四项</li></ol>", html_text)
+            self.assertNotIn("## My request for Codex", html_text)
 
 
 if __name__ == "__main__":
